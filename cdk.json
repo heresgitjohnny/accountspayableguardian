@@ -1,0 +1,10 @@
+{
+  "app": "python3 app.py",
+  "context": {
+    "prefix": "apguardian",
+    "inbox_address": "",
+    "po_from_address": "",
+    "clerk_email": "",
+    "cognito_domain_prefix": ""
+  }
+}

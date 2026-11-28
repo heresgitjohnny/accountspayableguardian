@@ -11,7 +11,7 @@ import os
 
 import boto3
 
-from common import table, now_iso, log, pay_invoice, PaymentRejected
+from common import table, now_iso, log, pay_invoice, PaymentRejected, friendly_reason
 
 sns = boto3.client("sns")
 
@@ -23,6 +23,7 @@ def notify(event, _ctx):
         "exception_id": invoice_id,
         "invoice_id": invoice_id,
         "reason": event.get("reason", ""),
+        "reason_detail": inv.get("exception_detail", ""),
         "source": event.get("source", ""),
         "task_token": event["token"],
         "status": "PENDING",
@@ -55,9 +56,14 @@ def finalize(event, _ctx):
         except PaymentRejected as e:
             result["payment_error"] = e.code
             final = "APPROVED_BUT_BLOCKED"
+            block = friendly_reason(e.code) or e.detail
+            result["block_reason"] = block
             table("INVOICES_TABLE").update_item(
                 Key={"invoice_id": invoice_id}, UpdateExpression="SET block_reason = :b",
                 ExpressionAttributeValues={":b": f"{e.code}: {e.detail}"})
+            table("EXCEPTIONS_TABLE").update_item(
+                Key={"exception_id": invoice_id}, UpdateExpression="SET block_reason = :b",
+                ExpressionAttributeValues={":b": block})
     else:
         final = "REJECTED"
         table("INVOICES_TABLE").update_item(

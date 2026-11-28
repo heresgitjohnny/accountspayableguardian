@@ -6,8 +6,39 @@ when something is out of range. It runs as four agents on the
 **Amazon Bedrock AgentCore managed harness**. They are boxed in by nine
 enforcement layers, so a prompt injection hidden in an invoice can't move money.
 
+- **Step-by-step deployment and operations guide:** [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 - **Rules (plain language) and the enforcement map:** [`docs/RULES.md`](docs/RULES.md)
 - **Adversarial test plan:** [`docs/STRESS_TESTS.md`](docs/STRESS_TESTS.md). Results from a real run are written to `docs/stress_results.md`.
+- **Diagrams:** see [Diagrams](#diagrams). Editable draw.io sources are in `docs/`.
+
+## Diagrams
+
+**Simple flow.** The seven steps an invoice goes through, in plain language.
+
+![Simple invoice flow](docs/data-flow-simple.png)
+
+**AWS architecture.** The services and how they connect.
+
+![AWS architecture](docs/architecture.png)
+
+**Detailed data flow.** Every check, every agent and what each one is allowed to do.
+
+![Detailed data flow](docs/data-flow.png)
+
+Editable sources: [`docs/data-flow-simple.drawio`](docs/data-flow-simple.drawio),
+[`docs/architecture.drawio`](docs/architecture.drawio) and
+[`docs/data-flow.drawio`](docs/data-flow.drawio). Open them at
+[app.diagrams.net](https://app.diagrams.net) or with the draw.io editor extension.
+
+## What the portal does
+
+| Tab | Who | What |
+|---|---|---|
+| Exceptions | `ap-clerk` | Review invoices that need a human. Each item shows a plain-English reason, the amount and the PO. Buttons: **Proceed to payment**, **Decline**, **Delete**. Others can view the queue. |
+| Invoices | any signed-in user | List and open the PDF (5-minute link) |
+| Purchase orders | `procurement` | Raise a PO for an approved vendor. The vendor is emailed the PO (needs `po_from_address`). |
+| Vendors | `procurement` | Add and remove vendors (name, contact email, sender domains, last 4 bank digits). Removal is refused while the vendor has open POs. |
+| Payments ledger | any signed-in user | Simulated payments |
 
 > Payments are **simulated**: they are written to a DynamoDB ledger and no bank
 > is called. To connect a real payment rail, replace the ledger write in
@@ -62,8 +93,9 @@ agentcore/provision.py  Creates the policy engine, gateway, targets, Cedar polic
 agentcore/policies/     Cedar policies (templated with gateway ARN / role names)
 agentcore/prompts/      System prompt per agent
 portal/                 Static SPA (vanilla JS, Cognito Hosted UI + PKCE)
-scripts/                deploy.sh, destroy.sh, seed_data.py, stress_test.py, testkit.py
+scripts/                deploy.sh, destroy.sh, package.sh, seed_data.py, stress_test.py, testkit.py
 tests/test_rules.py     Offline tests (moto + cedarpy) for the payment rules, email gate, hooks and Cedar policies
+docs/                   DEPLOYMENT.md, RULES.md, STRESS_TESTS.md, diagrams (.drawio sources and .png exports)
 ```
 
 Run the offline tests before you deploy: `pip install pytest "moto[dynamodb,stepfunctions]" pypdf cedarpy && pytest -q tests/`
@@ -73,7 +105,7 @@ Run the offline tests before you deploy: `pip install pytest "moto[dynamodb,step
 ### 1. Prerequisites
 
 - An AWS account and an IAM principal that can create IAM roles, Lambda, S3, DynamoDB, Cognito, CloudFront, WAF, API Gateway, Step Functions, SES, Bedrock and AgentCore resources.
-- Region: any Region with AgentCore harness, Policy in AgentCore, Textract and (for real inbound email) SES email receiving, for example **us-east-1**, **us-west-2** or **ap-southeast-2** (Sydney). The CloudFront WAF is only created when you deploy in us-east-1, because CloudFront web ACLs must live there; in other Regions the portal deploys without it.
+- Region: any region that offers Bedrock AgentCore harnesses, Textract and (for real inbound email) SES email receiving. It has been run in **ap-southeast-2**. The CloudFront WAF is only created in **us-east-1**. Set `AWS_REGION` and `CDK_DEFAULT_REGION` to the same region for every command.
 - **Model access:** if you leave `MODEL_ID` empty, the harness uses its managed recommended model. To pin one, set `MODEL_ID` to a Bedrock model or inference profile ID you have access to, for example `us.anthropic.claude-sonnet-4-6`.
 - Local tools: AWS CLI v2 (configured), Node.js 20+, the CDK CLI (`npm install -g aws-cdk`), and Python 3.12+.
 
@@ -92,10 +124,16 @@ Edit `cdk.json`, or pass `-c key=value` to the deploy script:
 ### 3. Deploy everything
 
 ```bash
-export AWS_REGION=us-east-1
-# optional: export MODEL_ID=us.anthropic.claude-sonnet-4-6
+export AWS_REGION=us-east-1          # or the region you use, e.g. ap-southeast-2
+# optional: pin the model, e.g. us.anthropic.claude-sonnet-4-6 or au.anthropic.claude-sonnet-4-6
+# export MODEL_ID=...
 ./scripts/deploy.sh -c clerk_email=you@example.com
 ```
+
+Settings passed with `-c` replace the values in `cdk.json` on each deploy. Put your
+`inbox_address`, `po_from_address` and `clerk_email` in `cdk.json` so a later deploy
+does not blank them. The full guide, including updating an existing deployment, is in
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 The script will:
 
@@ -159,7 +197,13 @@ path.
 | A Cedar policy fails strict validation | `provision.py` retries with `IGNORE_ALL_FINDINGS` and prints the finding. Review it before production. |
 | Harness errors with access denied on the model | Enable model access in Bedrock, or set `MODEL_ID` to a model or inference profile you can use, and re-run `provision.py` |
 | Invoice never extracted | Synchronous `AnalyzeExpense` handles single-page PDFs. For multi-page invoices, switch `extract_invoice` to `StartExpenseAnalysis` |
-| A harness finds no tools, or every call is refused as "not allowed" | Check the tool names in the harness trace. `allowedTools` in `provision.py` uses the gateway form `agent-tools___read_invoice`. If your trace shows `@ap_tools/agent-tools___read_invoice`, switch to that form and re-run `provision.py`. |
+| A harness finds no tools, or the supervisor writes `ask_intake_agent(...)` as plain text and stops ("Agents did not complete processing") | `allowedTools` must use the harness form `@ap_tools/<target>___<tool>`, for example `@ap_tools/agent-tools___read_invoice`. `provision.py` now does this. Re-run it after pulling the change. |
+| `InvokeHarness` is denied for `bedrock-agentcore:InvokeAgentRuntime` | The invoke and delegate Lambda roles need both `InvokeHarness` and `InvokeAgentRuntime` on `harness/*`. `infra/stack.py` grants both. Redeploy the stack. |
+| Invoice amount is blank or "(not read from PDF)" | Textract returned a value like `A$1,000,000.00`. `extract_invoice` now strips currency prefixes. If a PDF has no TOTAL or AMOUNT_DUE field, the amount stays empty and the invoice goes to a clerk. |
+| PO email says "email not sent" | Read the reason shown after "email not sent". Usually `po_from_address` is empty in `cdk.json`, the sender or vendor address is not verified in SES in the stack's region (sandbox mode), or the vendor has no contact email. |
+| No inbound email arrives | The MX record must point to `inbound-smtp.<stack-region>.amazonaws.com`, `inbox_address` must be set when deploying, and the rule set must be active (`aws ses set-active-receipt-rule-set --rule-set-name <prefix>-inbound`). |
+| `AWS::SES::ReceiptRuleSet ... already exists` on deploy | A leftover rule set from an earlier deploy. Deactivate it with `aws ses set-active-receipt-rule-set`, delete it with `aws ses delete-receipt-rule-set --rule-set-name <prefix>-inbound`, then redeploy. |
+| Clerk buttons are missing | The user must be in the `ap-clerk` group and must sign in again after being added. |
 | Legitimate invoices go to review because of guardrail hits | Tune the denied-topic definitions in `infra/stack.py`, or lower the prompt-attack strength. Record it in the build log. |
 
 ## Clean up

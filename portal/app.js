@@ -71,13 +71,25 @@
     async exceptions() {
       const tb = $("#exceptions tbody"); tb.textContent = "";
       const isClerk = groups().has("ap-clerk");
+      $("#exc-note").hidden = isClerk;
+      const labels = { PENDING: "Waiting for a clerk", DECIDING: "Processing...", APPROVED_PAID: "Approved and paid",
+        APPROVED_BUT_BLOCKED: "Approved, but payment was blocked", REJECTED: "Declined" };
       for (const e of await api("exceptions")) {
         const actions = document.createElement("span");
-        if (isClerk && e.status === "PENDING") {
-          actions.append(btn("Approve", () => decide(e.exception_id, "APPROVED")), " ",
-                         btn("Reject", () => decide(e.exception_id, "REJECTED")));
+        const open = e.status === "PENDING" || e.status === "DECIDING";
+        if (isClerk) {
+          if (open) {
+            actions.append(btn("Proceed to payment", () => decide(e.exception_id, "PROCEED")), " ",
+                           btn("Decline", () => decide(e.exception_id, "DECLINE")), " ");
+          }
+          actions.append(btn("Delete", () => decide(e.exception_id, "DELETE")));
         }
-        row(tb, [e.invoice_id, e.vendor_id, e.po_number, money(e.amount_cents), e.reason, e.status, actions]);
+        const reason = document.createElement("span");
+        reason.textContent = e.reason || "";
+        if (e.reason_detail) reason.title = e.reason_detail;
+        const status = (labels[e.status] || e.status) + (e.block_reason ? `: ${e.block_reason}` : "");
+        row(tb, [e.invoice_id, e.vendor_id, e.po_number || "(none found)",
+                 e.amount_cents ? money(e.amount_cents) : "(not read from PDF)", reason, status, actions]);
       }
     },
     async invoices() {
@@ -96,10 +108,23 @@
       form.hidden = !groups().has("procurement");
       if (!form.hidden) {
         const sel = form.querySelector("select"); sel.textContent = "";
-        for (const v of await api("vendors")) {
-          if (v.status !== "APPROVED") continue;
+        const approved = (await api("vendors")).filter((v) => v.status === "APPROVED");
+        if (!approved.length) {
+          const o = document.createElement("option"); o.value = ""; o.textContent = "No approved vendors - add one on the Vendors tab"; sel.appendChild(o);
+        }
+        for (const v of approved) {
           const o = document.createElement("option"); o.value = v.vendor_id; o.textContent = `${v.name} (${v.vendor_id})`; sel.appendChild(o);
         }
+      }
+    },
+    async vendors() {
+      const tb = $("#vendors tbody"); tb.textContent = "";
+      const canEdit = groups().has("procurement");
+      $("#vendor-form").hidden = !canEdit;
+      for (const v of await api("vendors")) {
+        const actions = document.createElement("span");
+        if (canEdit) actions.append(btn("Remove", () => removeVendor(v.vendor_id, v.name)));
+        row(tb, [v.vendor_id, v.name, v.status, v.contact_email, (v.sender_domains || []).join(", "), actions]);
       }
     },
     async ledger() {
@@ -121,7 +146,10 @@
   }
 
   async function decide(id, decision) {
-    if (!confirm(`${decision} invoice ${id}?`)) return;
+    const ask = { PROCEED: `Proceed to payment for invoice ${id}? The payment checks (PO, vendor, balance, duplicate, bank details) still apply.`,
+      DECLINE: `Decline invoice ${id}? It will stay unpaid.`,
+      DELETE: `Delete ${id} from the queue? The invoice is marked deleted and will not be paid.` }[decision];
+    if (!confirm(ask)) return;
     try { await api(`exceptions/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) }); }
     catch (e) { alert(e.message); }
     loaders.exceptions();
@@ -132,8 +160,25 @@
     const f = new FormData(ev.target); const msg = ev.target.querySelector(".msg");
     try {
       const po = await api("pos", { method: "POST", body: JSON.stringify(Object.fromEntries(f)) });
-      msg.textContent = `Created ${po.po_number}${po.emailed ? " and emailed the vendor" : " (email not sent: SES sender not configured)"}`;
+      msg.textContent = `Created ${po.po_number}${po.emailed ? " and emailed the vendor" : ` (email not sent: ${po.email_error || "unknown reason"})`}`;
       ev.target.reset(); loaders.pos();
+    } catch (e) { msg.textContent = e.message; }
+  });
+
+  async function removeVendor(id, name) {
+    if (!confirm(`Remove vendor ${name} (${id})? Invoices from this vendor will no longer be accepted.`)) return;
+    try { await api(`vendors/${encodeURIComponent(id)}`, { method: "DELETE" }); }
+    catch (e) { alert(e.message); }
+    loaders.vendors();
+  }
+
+  $("#vendor-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const msg = ev.target.querySelector(".msg");
+    try {
+      const v = await api("vendors", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(ev.target))) });
+      msg.textContent = `Added ${v.name} (${v.vendor_id})`;
+      ev.target.reset(); loaders.vendors();
     } catch (e) { msg.textContent = e.message; }
   });
 

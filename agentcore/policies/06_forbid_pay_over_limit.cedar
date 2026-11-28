@@ -1,6 +1,6 @@
 // Belt and braces: nobody pays over the limit through the gateway. Forbid always wins.
 forbid(
-  principal,
+  principal is AgentCore::IamEntity,
   action == AgentCore::Action::"agent-tools___pay_invoice",
   resource == AgentCore::Gateway::"{GATEWAY_ARN}"
 ) unless {

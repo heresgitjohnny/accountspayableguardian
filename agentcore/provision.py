@@ -29,12 +29,16 @@ ROLES = ("supervisor", "intake", "matching", "payment")
 TOOLS_TARGET = "agent-tools"
 DELEGATE_TARGET = "delegate"
 # allowedTools per harness - layer 4 (the agent cannot even see other tools)
+# Gateway tools are exposed to the harness as "@<harness tool name>/<target>___<tool>".
+# The harness tool name is "ap_tools" (see gw_tool below). Without the prefix the
+# model cannot see the tools and just writes the call out as text.
+GW = "@ap_tools/"
 ALLOWED = {
-    "supervisor": [f"{DELEGATE_TARGET}___ask_intake_agent", f"{DELEGATE_TARGET}___ask_matching_agent",
-                   f"{DELEGATE_TARGET}___ask_payment_agent"],
-    "intake": [f"{TOOLS_TARGET}___read_invoice"],
-    "matching": [f"{TOOLS_TARGET}___read_invoice", f"{TOOLS_TARGET}___lookup_po"],
-    "payment": [f"{TOOLS_TARGET}___pay_invoice", f"{TOOLS_TARGET}___request_approval"],
+    "supervisor": [f"{GW}{DELEGATE_TARGET}___ask_intake_agent", f"{GW}{DELEGATE_TARGET}___ask_matching_agent",
+                   f"{GW}{DELEGATE_TARGET}___ask_payment_agent"],
+    "intake": [f"{GW}{TOOLS_TARGET}___read_invoice"],
+    "matching": [f"{GW}{TOOLS_TARGET}___read_invoice", f"{GW}{TOOLS_TARGET}___lookup_po"],
+    "payment": [f"{GW}{TOOLS_TARGET}___pay_invoice", f"{GW}{TOOLS_TARGET}___request_approval"],
 }
 LIMITS = {"supervisor": (12, 600), "intake": (4, 180), "matching": (6, 180), "payment": (4, 180)}
 

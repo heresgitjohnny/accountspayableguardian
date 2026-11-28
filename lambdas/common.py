@@ -7,6 +7,7 @@ matter what the agents, the gateway policy or the hooks decided upstream.
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -36,12 +37,19 @@ def today():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def to_cents(value):
+def to_cents(value, lenient=False):
     """Convert a money value (str/float/Decimal/int dollars) to integer cents."""
     if value is None:
         return None
+    text = str(value)
+    if lenient:
+        # Textract returns values like "A$1,000,000.00" or "AUD 1,900.00". Dot decimals only.
+        m = re.search(r"\d[\d,]*(?:\.\d+)?|\.\d+", text)
+        if not m:
+            return None
+        text = m.group(0)
     try:
-        d = Decimal(str(value).replace(",", "").replace("$", "").strip())
+        d = Decimal(text.replace(",", "").replace("$", "").strip())
     except (InvalidOperation, ValueError):
         return None
     return int((d * 100).to_integral_value())
@@ -77,18 +85,81 @@ def parse_body(event):
 # ---------------------------------------------------------------------------
 # Exceptions (human review) - every "not sure" path ends here.
 # ---------------------------------------------------------------------------
+_CODE_TEXT = {
+    "OVER_AUTO_LIMIT": "The invoice is over the $2,000 automatic payment limit.",
+    "DAILY_VENDOR_CAP": "Paying it would take this vendor over the $5,000 daily automatic payment limit.",
+    "DUPLICATE_INVOICE": "This vendor invoice number has already been processed.",
+    "UNKNOWN_PO": "The purchase order on the invoice does not exist.",
+    "PO_NOT_OPEN": "The purchase order is not open.",
+    "VENDOR_MISMATCH": "The purchase order belongs to a different vendor than the sender.",
+    "PO_BALANCE_EXCEEDED": "The invoice is more than the remaining balance on the purchase order.",
+    "VENDOR_NOT_APPROVED": "The vendor is not on the approved list.",
+    "BANK_DETAILS_MISMATCH": "The bank details on the invoice do not match the account on file for this vendor.",
+    "NO_AMOUNT": "The invoice amount could not be read from the PDF.",
+    "AMOUNT_MISMATCH": "The amount the agent tried to pay does not match the invoice total.",
+    "WRONG_STATE": "The invoice was already being handled (paid or in review).",
+    "ALREADY_PAID": "The invoice has already been paid.",
+    "UNKNOWN_INVOICE": "The invoice could not be found.",
+}
+_GUARD_TEXT = {
+    "topic:BankDetailChange": "The email or invoice asks to change or redirect bank account details.",
+    "topic:AgentOverride": "The email or invoice contains text trying to instruct the automated system (for example to skip approval or ignore its rules).",
+    "topic:MasterDataChange": "The email or invoice asks for vendors or purchase orders to be created, changed or exported.",
+    "content:PROMPT_ATTACK": "The email or invoice contains text that looks like an attempt to manipulate the AI agents.",
+}
+
+
+def friendly_reason(raw):
+    """Turn technical failure text into a sentence a payment clerk can act on."""
+    raw = str(raw or "").strip()
+    notes = []
+    if "Amount could not be read" in raw:
+        notes.append("The amount could not be read from the PDF.")
+    if "No PO number found" in raw:
+        notes.append("No purchase order number was found on the invoice.")
+
+    if "Guardrail blocked" in raw or "safety hook" in raw:
+        hits = []
+        for kind, name in re.findall(r"\b(topic|content|word):([A-Za-z_]+)", raw):
+            msg = _GUARD_TEXT.get(f"{kind}:{name}")
+            if msg and msg not in hits:
+                hits.append(msg)
+        body = " ".join(hits) if hits else "The safety checks flagged content in the email or invoice."
+        return (f"Held for review by the safety checks. {body} "
+                "Open the PDF and check the sender before approving. " + " ".join(notes)).strip()[:900]
+    if raw.startswith("Agent run failed"):
+        return "The automated review could not run because of a system error. A clerk needs to review this invoice. " + " ".join(notes)
+    if raw.startswith("Agents did not complete processing"):
+        return ("The automated review stopped before reaching a decision, so a clerk needs to review this invoice. "
+                + " ".join(notes)).strip()
+
+    text = re.sub(r"^Agent:\s*", "", raw)
+    found = [c for c in _CODE_TEXT if c in text]
+    if found:
+        text = " ".join(_CODE_TEXT[c] for c in found)
+        if "Agent:" in raw:
+            text = "Sent for review by the payment agent. " + text
+    return (text + (" " + " ".join(notes) if notes else "")).strip()[:900]
+
+
 def open_exception(invoice_id, reason, source="system"):
-    """Start the approval workflow for an invoice. Idempotent per invoice."""
+    """Start the approval workflow for an invoice. Idempotent per invoice.
+
+    `reason` may be technical text. The clerk sees a friendly version and the
+    original is kept as exception_detail.
+    """
     sfn = boto3.client("stepfunctions")
+    detail = str(reason)[:900]
+    reason = friendly_reason(detail)
     # Claim the invoice synchronously so concurrent callers cannot open two reviews
     # and a paid invoice can never be re-opened.
     try:
         table("INVOICES_TABLE").update_item(
             Key={"invoice_id": invoice_id},
-            UpdateExpression="SET #s = :e, exception_reason = :r",
+            UpdateExpression="SET #s = :e, exception_reason = :r, exception_detail = :d",
             ConditionExpression="attribute_exists(invoice_id) AND NOT #s IN (:paid, :e)",
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":e": "EXCEPTION", ":paid": "PAID", ":r": str(reason)[:900]},
+            ExpressionAttributeValues={":e": "EXCEPTION", ":paid": "PAID", ":r": str(reason)[:900], ":d": detail},
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":

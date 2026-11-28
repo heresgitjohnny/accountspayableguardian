@@ -19,6 +19,7 @@
     <button data-tab="exceptions">Exceptions</button>
     <button data-tab="invoices">Invoices</button>
     <button data-tab="pos">Purchase orders</button>
+    <button data-tab="vendors">Vendors</button>
     <button data-tab="ledger">Payments ledger</button>
   </nav>
   <main>
@@ -26,6 +27,7 @@
 
     <section id="exceptions" class="tab" hidden>
       <h2>Exceptions awaiting a human decision</h2>
+      <p id="exc-note" hidden>You can view this queue, but only users in the ap-clerk group can proceed, decline or delete items.</p>
       <table><thead><tr><th>Invoice</th><th>Vendor</th><th>PO</th><th>Amount</th><th>Reason</th><th>Status</th><th></th></tr></thead><tbody></tbody></table>
     </section>
 
@@ -46,6 +48,20 @@
         <p class="msg"></p>
       </form>
       <table><thead><tr><th>PO</th><th>Vendor</th><th>Total</th><th>Remaining</th><th>Status</th><th>Created by</th></tr></thead><tbody></tbody></table>
+    </section>
+
+    <section id="vendors" class="tab" hidden>
+      <h2>Vendors</h2>
+      <form id="vendor-form" hidden>
+        <h3>Add a vendor</h3>
+        <label>Name <input name="name" maxlength="120" required></label>
+        <label>Contact email <input name="contact_email" type="email" required></label>
+        <label>Invoice sender domains (comma separated) <input name="sender_domains" placeholder="acme.com, billing.acme.com" required></label>
+        <label>Bank account last 4 digits <input name="bank_account_last4" pattern="[0-9]{4}" maxlength="4" required></label>
+        <button type="submit">Add vendor</button>
+        <p class="msg"></p>
+      </form>
+      <table><thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Contact</th><th>Sender domains</th><th></th></tr></thead><tbody></tbody></table>
     </section>
 
     <section id="ledger" class="tab" hidden>

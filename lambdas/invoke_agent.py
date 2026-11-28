@@ -33,10 +33,19 @@ def _process(invoice_id):
     log.info(json.dumps({"event": "AGENT_DONE", "invoice_id": invoice_id, "status": inv.get("status"),
                          "stop_reason": result["stop_reason"], "hooks": result["hooks"]}))
     if inv.get("status") not in ("PAID", "EXCEPTION", "REJECTED"):
-        reason = "Agents did not complete processing"
+        denied = [h for h in result["hooks"] if h.get("decision") == "deny"]
+        last = " ".join((result["text"] or "").split())[-300:]
         if result["stop_reason"] == "hook_stopped":
-            denied = [h for h in result["hooks"] if h.get("decision") == "deny"]
             reason = f"Stopped by safety hook: {denied[:1]}"
+        else:
+            reason = (f"Agents did not complete processing (invoice status {inv.get('status')}, "
+                      f"stop reason {result['stop_reason']}"
+                      + (f", hook denials {denied[:1]}" if denied else "")
+                      + f"). Last agent output: {last or 'none'}")
+        if not inv.get("amount_cents"):
+            reason += " | Amount could not be read from the PDF."
+        if not inv.get("po_number"):
+            reason += " | No PO number found on the invoice."
         return open_exception(invoice_id, reason, source="invoke_agent")
     return {"invoice_id": invoice_id, "status": inv.get("status")}
 

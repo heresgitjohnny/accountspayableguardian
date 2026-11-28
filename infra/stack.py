@@ -178,7 +178,8 @@ class ApGuardianStack(Stack):
 
         harness_arn_pattern = f"arn:aws:bedrock-agentcore:{Aws.REGION}:{Aws.ACCOUNT_ID}:harness/*"
         ssm_arn = f"arn:aws:ssm:{Aws.REGION}:{Aws.ACCOUNT_ID}:parameter{ssm_prefix}/*"
-        invoke_harness = iam.PolicyStatement(actions=["bedrock-agentcore:InvokeHarness"], resources=[harness_arn_pattern])
+        invoke_harness = iam.PolicyStatement(actions=["bedrock-agentcore:InvokeHarness", "bedrock-agentcore:InvokeAgentRuntime"],
+                                         resources=[harness_arn_pattern, harness_arn_pattern + "/*"])
         read_ssm = iam.PolicyStatement(actions=["ssm:GetParameter"], resources=[ssm_arn])
 
         invoke_fn = fn("InvokeAgentFn", "invoke_agent.handler", timeout=900, memory=512)
@@ -335,8 +336,16 @@ class ApGuardianStack(Stack):
         if po_from_address:
             create_po_fn.add_to_role_policy(iam.PolicyStatement(actions=["ses:SendEmail"], resources=["*"],
                                                                 conditions={"StringEquals": {"ses:FromAddress": po_from_address}}))
-        decide_fn = fn("PortalDecideExceptionFn", "portal_api.decide_exception")
+        add_vendor_fn = fn("PortalAddVendorFn", "portal_api.add_vendor")
+        vendors.grant_read_write_data(add_vendor_fn)
+        remove_vendor_fn = fn("PortalRemoveVendorFn", "portal_api.remove_vendor")
+        vendors.grant_read_write_data(remove_vendor_fn)
+        pos.grant_read_data(remove_vendor_fn)
+        decide_fn = fn("PortalDecideExceptionFn", "portal_api.decide_exception", timeout=60,
+                       extra_env={"FINALIZE_FN": finalize_fn.function_name})
         exceptions.grant_read_write_data(decide_fn)
+        invoices.grant_read_write_data(decide_fn)
+        finalize_fn.grant_invoke(decide_fn)
         approval_sm.grant_task_response(decide_fn)
         read_fn = fn("PortalReadOnlyFn", "portal_api.read_only")
         for t in (vendors, pos, invoices, ledger, exceptions):
@@ -361,7 +370,10 @@ class ApGuardianStack(Stack):
         exc_r.add_method("GET", ro, **auth)
         exc_r.add_resource("{id}").add_resource("decision").add_method("POST", apigw.LambdaIntegration(decide_fn), **auth)
         api.add_resource("ledger").add_method("GET", ro, **auth)
-        api.add_resource("vendors").add_method("GET", ro, **auth)
+        ven_r = api.add_resource("vendors")
+        ven_r.add_method("GET", ro, **auth)
+        ven_r.add_method("POST", apigw.LambdaIntegration(add_vendor_fn), **auth)
+        ven_r.add_resource("{id}").add_method("DELETE", apigw.LambdaIntegration(remove_vendor_fn), **auth)
 
         web_acl_arn = None
         if self.region == "us-east-1":  # CloudFront WAF must live in us-east-1

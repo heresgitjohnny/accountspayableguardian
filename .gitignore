@@ -1,0 +1,12 @@
+cdk.out/
+build/
+cdk-outputs.json
+agentcore/state.json
+__pycache__/
+.venv/
+tests/out/
+dist/
+node_modules/
+.DS_Store
+.$*.bkp
+*.pyc

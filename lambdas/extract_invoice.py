@@ -60,7 +60,7 @@ def _process(bucket, key):
         if ftype in FIELD_MAP and value and FIELD_MAP[ftype] not in item:
             item[FIELD_MAP[ftype]] = value.strip()[:100]
         elif ftype in AMOUNT_TYPES and value and "amount_cents" not in item:
-            cents = to_cents(value)
+            cents = to_cents(value, lenient=True)
             if cents is not None:
                 item["amount_cents"] = cents
                 amount_conf = conf
